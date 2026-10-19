@@ -78,5 +78,81 @@ class TestWriteSupport(unittest.TestCase):
         self.assertFalse(eds.Eds.can_write)
 
 
+
+class FakeIcal:
+    class PropertyStatus:
+        CANCELLED = "CANCELLED"
+        CONFIRMED = "CONFIRMED"
+
+    class PropertyKind:
+        X_PROPERTY = "X_PROPERTY"
+        ATTENDEE_PROPERTY = "ATTENDEE_PROPERTY"
+
+
+class FakeComponent:
+    def __init__(self, uid, status="CONFIRMED"):
+        self._uid = uid
+        self._status = status
+
+    def get_status(self):
+        return self._status
+
+    def get_uid(self):
+        return self._uid
+
+    def get_summary(self):
+        return "Sync meeting"
+
+    def get_location(self):
+        return ""
+
+    def get_description(self):
+        return ""
+
+    def get_first_property(self, _kind):
+        return None
+
+
+class TestGoogleEventLinks(unittest.TestCase):
+    def test_google_uid_and_calendar_produce_event_link(self):
+        client = eds.Eds()
+        ev = client._to_event(
+            FakeComponent("abc123@google.com"),
+            FakeTime(date=(2026, 9, 17)),
+            FakeTime(date=(2026, 9, 18)),
+            FakeIcal,
+            "utc-zone",
+            "me@example.com",
+        )
+        self.assertTrue(
+            ev["htmlLink"].startswith("https://calendar.google.com/calendar/event?eid="),
+            ev["htmlLink"],
+        )
+
+    def test_non_google_uid_gets_empty_html_link(self):
+        client = eds.Eds()
+        ev = client._to_event(
+            FakeComponent("nextcloud-event-123"),
+            FakeTime(date=(2026, 9, 17)),
+            FakeTime(date=(2026, 9, 18)),
+            FakeIcal,
+            "utc-zone",
+            "me@example.com",
+        )
+        self.assertNotIn("htmlLink", ev)
+
+    def test_non_google_calendar_gets_empty_html_link(self):
+        client = eds.Eds()
+        ev = client._to_event(
+            FakeComponent("abc123@google.com"),
+            FakeTime(date=(2026, 9, 17)),
+            FakeTime(date=(2026, 9, 18)),
+            FakeIcal,
+            "utc-zone",
+            "",
+        )
+        self.assertNotIn("htmlLink", ev)
+
+
 if __name__ == "__main__":
     unittest.main()

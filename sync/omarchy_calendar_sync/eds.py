@@ -15,10 +15,13 @@ The gi imports are deliberately lazy. The module must be importable, and its
 pure conversion functions testable, on a machine with no EDS installed.
 """
 
+import re
 import time
+import urllib.parse
 from datetime import datetime, timezone
 
 from .errors import SyncError
+from .ics import google_event_url
 from .resources import build_event
 
 # EDS returns from refresh as soon as the CalDAV fetch is *initiated*, not when
@@ -101,6 +104,7 @@ class Eds:
         self._ical = None
         self._registry = None
         self._clients = {}
+        self._calendar_google_ids = {}
 
     def _bindings(self):
         if self._eds is None:
@@ -161,6 +165,18 @@ class Eds:
 
             uid = source.get_uid()
             self._clients[uid] = client
+
+            google_cal_id = ""
+            if source.has_extension(eds.SOURCE_EXTENSION_WEBDAV_BACKEND):
+                webdav = source.get_extension(eds.SOURCE_EXTENSION_WEBDAV_BACKEND)
+                if hasattr(webdav, "get_resource_path"):
+                    res_path = webdav.get_resource_path() or ""
+                    match = re.match(r"^/caldav/v2/([^/]+)/", res_path)
+                    if match:
+                        google_cal_id = urllib.parse.unquote(match.group(1))
+
+            self._calendar_google_ids[uid] = google_cal_id
+
             found.append(
                 {
                     "id": uid,
@@ -175,6 +191,23 @@ class Eds:
 
         found.sort(key=lambda calendar: calendar["name"])
         return found
+
+    def _google_calendar_id(self, source_uid):
+        if source_uid in self._calendar_google_ids:
+            return self._calendar_google_ids[source_uid]
+        if self._registry is not None:
+            eds, _, _ = self._bindings()
+            source = self._registry.ref_source(source_uid)
+            if source and source.has_extension(eds.SOURCE_EXTENSION_WEBDAV_BACKEND):
+                webdav = source.get_extension(eds.SOURCE_EXTENSION_WEBDAV_BACKEND)
+                if hasattr(webdav, "get_resource_path"):
+                    res_path = webdav.get_resource_path() or ""
+                    match = re.match(r"^/caldav/v2/([^/]+)/", res_path)
+                    if match:
+                        cal_id = urllib.parse.unquote(match.group(1))
+                        self._calendar_google_ids[source_uid] = cal_id
+                        return cal_id
+        return ""
 
     def events(self, calendar_id, time_min, time_max):
         _eds, _ecal, ical = self._bindings()
@@ -197,18 +230,21 @@ class Eds:
         except Exception as error:
             raise EdsError("cannot read %s: %s" % (calendar_id, error))
 
+        google_cal_id = self._google_calendar_id(calendar_id)
         utc_zone = ical.Timezone.get_utc_timezone()
         return [
             self._to_event(component, instance_start, instance_end, ical,
-                           utc_zone)
+                           utc_zone, google_cal_id)
             for component, instance_start, instance_end in collected
         ]
 
     def _to_event(self, component, instance_start, instance_end, ical,
-                  utc_zone):
+                  utc_zone, google_cal_id=""):
         cancelled = component.get_status() == ical.PropertyStatus.CANCELLED
+        uid = component.get_uid() or ""
+        html_link = google_event_url(uid, google_cal_id)
         return build_event(
-            uid=component.get_uid() or "",
+            uid=uid,
             start_node=time_to_node(instance_start, utc_zone),
             end_node=time_to_node(instance_end, utc_zone),
             summary=component.get_summary() or "",
@@ -218,6 +254,7 @@ class Eds:
             conference_url=_x_property(component, ical,
                                        "X-GOOGLE-CONFERENCE"),
             partstat=_own_partstat(component, ical, self._identity),
+            html_link=html_link,
         )
 
     def auth_hint(self, _cfg):
